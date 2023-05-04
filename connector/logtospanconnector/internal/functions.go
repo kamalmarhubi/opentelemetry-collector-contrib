@@ -18,33 +18,114 @@ import (
 	"context"
 // 	"fmt"
 //
+	"errors"
+	"log"
+//
 // 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 //
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/ottlfuncs"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottllog"
 )
 
-func TraceContextFunctions() map[string]ottl.Factory[ottllog.TransformContext] {
-	return ottl.CreateFactoryMap(newFromLogRecordFactory())
-}
+type FactoryMap map[string]ottl.Factory[ottllog.TransformContext]
 
-func newFromLogRecordFactory() ottl.Factory[ottllog.TransformContext] {
-	return ottl.NewFactory("FromLogRecord", &struct{}{}, createFromLogRecordFunction)
-}
-
-func createFromLogRecordFunction(fCtx ottl.FunctionContext, oArgs ottl.Arguments) (ottl.ExprFunc[ottllog.TransformContext], error) {
-	return fromLogRecord()
+func TraceContextFunctions() FactoryMap {
+	return ottl.CreateFactoryMap(
+		ottlfuncs.NewTraceIDFactory[ottllog.TransformContext](),
+		ottlfuncs.NewSpanIDFactory[ottllog.TransformContext](),
+		ottlfuncs.NewIsMatchFactory[ottllog.TransformContext](),
+		ottlfuncs.NewConcatFactory[ottllog.TransformContext](),
+		ottlfuncs.NewSplitFactory[ottllog.TransformContext](),
+		ottlfuncs.NewIntFactory[ottllog.TransformContext](),
+		ottlfuncs.NewConvertCaseFactory[ottllog.TransformContext](),
+		ottlfuncs.NewParseJSONFactory[ottllog.TransformContext](),
+		ottlfuncs.NewSubstringFactory[ottllog.TransformContext](),
+		ottlfuncs.NewMergeMapsFactory[ottllog.TransformContext](),
+		newFromFactory[ottllog.TransformContext](),
+		newFromLogRecordFactory(),
+		newStringFactory(),
+	)
 }
 
 type TraceContext struct {
 	TraceID pcommon.TraceID
 	SpanID pcommon.SpanID
+	ParentSpanID pcommon.SpanID
+	TraceState pcommon.TraceState
 }
 
 func (tc TraceContext) IsValid() bool {
 	return !tc.TraceID.IsEmpty() && !tc.SpanID.IsEmpty()
 }
+
+type StringArguments[K any] struct {
+	Target ottl.Getter[K] `ottlarg:"0"`
+}
+
+func newStringFactory() ottl.Factory[ottllog.TransformContext] {
+	return ottl.NewFactory("String", &StringArguments[ottllog.TransformContext]{}, createStringFunction)
+}
+
+func createStringFunction(fCtx ottl.FunctionContext, oArgs ottl.Arguments) (ottl.ExprFunc[ottllog.TransformContext], error) {
+	args, ok := oArgs.(*StringArguments[ottllog.TransformContext])
+
+	if !ok {
+		return nil, errors.New("String args must be of type *StringArguments[K]")
+	}
+
+	return stringF(args.Target)
+}
+
+
+func stringF(target ottl.Getter[ottllog.TransformContext]) (ottl.ExprFunc[ottllog.TransformContext], error) {
+	return func(ctx context.Context, tCtx ottllog.TransformContext) (interface{}, error) {
+		lr := tCtx.GetLogRecord()
+
+		tc := TraceContext{TraceID: lr.TraceID(), SpanID: lr.SpanID()}
+		if tc.IsValid() {
+			return tc, nil
+		}
+
+		return TraceContext{}, nil
+	}, nil
+}
+
+type FromArguments[K any] struct {
+	Target ottl.StringLikeGetter[K] `ottlarg:"0"`
+}
+
+func newFromFactory[K any]() ottl.Factory[K] {
+	log.Printf("WTF")
+	return ottl.NewFactory("from", &FromArguments[K]{}, createFromFunction[K])
+}
+
+func createFromFunction[K any](_ ottl.FunctionContext, oArgs ottl.Arguments) (ottl.ExprFunc[K], error) {
+	args, ok := oArgs.(*FromArguments[K])
+
+	if !ok {
+		return nil, errors.New("from args must be of type *FromArguments[K]")
+	}
+
+	return from(args)
+}
+
+
+func from[K any](args *FromArguments[K]) (ottl.ExprFunc[K], error) {
+	return func(ctx context.Context, tCtx K) (interface{}, error) {
+		return args.Target.Get(ctx, tCtx)
+	}, nil
+}
+
+func newFromLogRecordFactory() ottl.Factory[ottllog.TransformContext] {
+	return ottl.NewFactory("from_log_record", &struct{}{}, createFromLogRecordFunction)
+}
+
+func createFromLogRecordFunction(_ ottl.FunctionContext, _ ottl.Arguments) (ottl.ExprFunc[ottllog.TransformContext], error) {
+	return fromLogRecord()
+}
+
 
 func fromLogRecord() (ottl.ExprFunc[ottllog.TransformContext], error) {
 	return func(ctx context.Context, tCtx ottllog.TransformContext) (interface{}, error) {
@@ -58,82 +139,3 @@ func fromLogRecord() (ottl.ExprFunc[ottllog.TransformContext], error) {
 		return TraceContext{}, nil
 	}, nil
 }
-//
-// func hasAttributeKeyOnDatapoint(key string) (ottl.ExprFunc[ottllog.TransformContext], error) {
-// 	return func(ctx context.Context, tCtx ottllog.TransformContext) (interface{}, error) {
-// 		return checkDataPoints(tCtx, key, nil)
-// 	}, nil
-// }
-//
-// func checkDataPoints(tCtx ottllog.TransformContext, key string, expectedVal *string) (interface{}, error) {
-// 	metric := tCtx.GetMetric()
-// 	switch metric.Type() {
-// 	case pmetric.MetricTypeSum:
-// 		return checkNumberDataPointSlice(metric.Sum().DataPoints(), key, expectedVal), nil
-// 	case pmetric.MetricTypeGauge:
-// 		return checkNumberDataPointSlice(metric.Gauge().DataPoints(), key, expectedVal), nil
-// 	case pmetric.MetricTypeHistogram:
-// 		return checkHistogramDataPointSlice(metric.Histogram().DataPoints(), key, expectedVal), nil
-// 	case pmetric.MetricTypeExponentialHistogram:
-// 		return checkExponentialHistogramDataPointSlice(metric.ExponentialHistogram().DataPoints(), key, expectedVal), nil
-// 	case pmetric.MetricTypeSummary:
-// 		return checkSummaryDataPointSlice(metric.Summary().DataPoints(), key, expectedVal), nil
-// 	}
-// 	return nil, fmt.Errorf("unknown metric type")
-// }
-//
-// func checkNumberDataPointSlice(dps pmetric.NumberDataPointSlice, key string, expectedVal *string) bool {
-// 	for i := 0; i < dps.Len(); i++ {
-// 		dp := dps.At(i)
-// 		value, ok := dp.Attributes().Get(key)
-// 		if ok {
-// 			if expectedVal != nil {
-// 				return value.Str() == *expectedVal
-// 			}
-// 			return true
-// 		}
-// 	}
-// 	return false
-// }
-//
-// func checkHistogramDataPointSlice(dps pmetric.HistogramDataPointSlice, key string, expectedVal *string) bool {
-// 	for i := 0; i < dps.Len(); i++ {
-// 		dp := dps.At(i)
-// 		value, ok := dp.Attributes().Get(key)
-// 		if ok {
-// 			if expectedVal != nil {
-// 				return value.Str() == *expectedVal
-// 			}
-// 			return true
-// 		}
-// 	}
-// 	return false
-// }
-//
-// func checkExponentialHistogramDataPointSlice(dps pmetric.ExponentialHistogramDataPointSlice, key string, expectedVal *string) bool {
-// 	for i := 0; i < dps.Len(); i++ {
-// 		dp := dps.At(i)
-// 		value, ok := dp.Attributes().Get(key)
-// 		if ok {
-// 			if expectedVal != nil {
-// 				return value.Str() == *expectedVal
-// 			}
-// 			return true
-// 		}
-// 	}
-// 	return false
-// }
-//
-// func checkSummaryDataPointSlice(dps pmetric.SummaryDataPointSlice, key string, expectedVal *string) bool {
-// 	for i := 0; i < dps.Len(); i++ {
-// 		dp := dps.At(i)
-// 		value, ok := dp.Attributes().Get(key)
-// 		if ok {
-// 			if expectedVal != nil {
-// 				return value.Str() == *expectedVal
-// 			}
-// 			return true
-// 		}
-// 	}
-// 	return false
-// }

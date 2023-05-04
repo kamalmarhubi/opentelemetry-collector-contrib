@@ -17,6 +17,7 @@ package logtospanconnector // import "github.com/open-telemetry/opentelemetry-co
 import (
 	// "bytes"
 	"context"
+	"log"
 	"sync"
 	// "time"
 
@@ -24,9 +25,9 @@ import (
 	// "github.com/tilinna/clock"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
-	// "go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
-	// "go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/collector/pdata/ptrace"
 	// conventions "go.opentelemetry.io/collector/semconv/v1.6.1"
 	"go.uber.org/zap"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
@@ -39,6 +40,12 @@ import (
 	// "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatautil"
 )
 
+func init() {
+	fuckOff(log.Printf)
+}
+
+func fuckOff(_ any) {}
+
 
 type logtospan struct {
 	lock   sync.Mutex
@@ -47,7 +54,8 @@ type logtospan struct {
 	config Config
 
 	logsConsumer consumer.Logs
-	traceContextGetter ottl.Statements[ottllog.TransformContext]
+	traceContextGetter *ottl.Statement[ottllog.TransformContext]
+	spanNameGetter *ottl.Statement[ottllog.TransformContext]
 
 	done    chan struct{}
 	started bool
@@ -55,15 +63,28 @@ type logtospan struct {
 	shutdownOnce sync.Once
 }
 
+func parseWithFunctions(settings component.TelemetrySettings, factoryMap internal.FactoryMap, stmt string) (*ottl.Statement[ottllog.TransformContext], error) {
+	parser, err :=  ottllog.NewParser(factoryMap, settings)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := parser.ParseStatement(stmt)
+	if err != nil {
+		return nil, err
+	}
+	return parsed, nil
+}
+
 func newConnector(settings component.TelemetrySettings, config component.Config) (*logtospan, error) {
 	settings.Logger.Info("Building logtospan connector")
 	cfg := config.(*Config)
 
-	traceContextParser, err := ottllog.NewParser(internal.TraceContextFunctions(), settings)
+	traceContextGetter, err := parseWithFunctions(settings, internal.TraceContextFunctions(), cfg.TraceContext)
 	if err != nil {
 		return nil, err
 	}
-	traceContextStatement, err := traceContextParser.ParseStatement(cfg.TraceContext)
+
+	spanNameGetter, err := parseWithFunctions(settings, internal.TraceContextFunctions(), cfg.SpanName)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +92,8 @@ func newConnector(settings component.TelemetrySettings, config component.Config)
 	return &logtospan{
 		settings: settings, 
 		config:                *cfg,
-		traceContextGetter: ottl.NewStatements([]*ottl.Statement[ottllog.TransformContext]{traceContextStatement}, settings),
+		traceContextGetter: traceContextGetter,
+		spanNameGetter: spanNameGetter,
 		done:                  make(chan struct{}),
 	}, nil
 }
@@ -119,80 +141,94 @@ func (c *logtospan) ConsumeLogs(ctx context.Context, logs plog.Logs) error {
 	return nil
 }
 
-func (c *logtospan) convertLogs(ctx context.Context, logs plog.Logs) error {
-	for i := 0; i < logs.ResourceLogs().Len(); i++ {
-		rlogs := logs.ResourceLogs().At(i)
+func (c *logtospan) convertLogRecord(ctx context.Context, res pcommon.Resource, scope pcommon.InstrumentationScope, lr plog.LogRecord) (ptrace.Span, error) {
+	span := ptrace.NewSpan()
+
+	tcRes, _, err := c.traceContextGetter.Execute(ctx, ottllog.NewTransformContext(lr, scope, res))
+	if err != nil {
+		return span, err
+	}
+	tc := tcRes.(internal.TraceContext)
+	// if !tc.IsValid() {
+	// 	continue
+	// }
+
+	nameRes, _, err := c.spanNameGetter.Execute(ctx, ottllog.NewTransformContext(lr, scope, res))
+	if err != nil {
+		c.settings.Logger.Info("lol", zap.Any("ahahah", nameRes))
+		return span, err
+	}
+	missingno := "missingno"
+	name := nameRes.(*string)
+	if name == nil {
+		name = &missingno
+	}
+
+	span.SetName(*name)
+	span.SetTraceID(tc.TraceID)
+	span.SetSpanID(tc.SpanID)
+	span.SetParentSpanID(tc.ParentSpanID)
+
+	return span, nil
+}
+
+func (c *logtospan) convertLogs(ctx context.Context, logs plog.Logs) (ptrace.Traces, error) {
+	traces := ptrace.NewTraces()
+	rss := traces.ResourceSpans()
+
+	rlogss := logs.ResourceLogs()
+	for i := 0; i < rlogss.Len(); i++ {
+		rlogs := rlogss.At(i)
 		res := rlogs.Resource()
 
-		ilsSlice := rlogs.ScopeLogs()
-		for j := 0; j < ilsSlice.Len(); j++ {
-			ils := ilsSlice.At(j)
-			is := ils.Scope()
-			lrs := ils.LogRecords()
-			for k := 0; k < lrs.Len(); k++ {
+		rspans := rss.AppendEmpty()
+		res.CopyTo(rspans.Resource())
 
+		slogss := rlogs.ScopeLogs()
+		sspanss := rspans.ScopeSpans()
+		for j := 0; j < slogss.Len(); j++ {
+			slogs := slogss.At(j)
+			scope := slogs.Scope()
+
+			sspans := sspanss.AppendEmpty()
+			scope.CopyTo(sspans.Scope())
+
+			lrs := slogs.LogRecords()
+			spans := sspans.Spans()
+			for k := 0; k < lrs.Len(); k++ {
 				lr := lrs.At(k)
-				tc, ran, err := c.traceContextGetter.Execute(ctx, ottllog.NewTransformContext(lr, is, res))
-				c.settings.Logger.Info("lol", zap.Any("ahahah", lr), zap.Any("jkfdjs", internal.TraceContextFunctions()))
+
+				if lr.Body().Type() != pcommon.ValueTypeStr {
+					// TODO
+					// log? metric?
+				}
+
+				tcRes, _, err := c.traceContextGetter.Execute(ctx, ottllog.NewTransformContext(lr, scope, res))
+				if err != nil {
+					return traces, err
+				}
+				tc := tcRes.(internal.TraceContext)
+				if !tc.IsValid() {
+					continue
+				}
+				nameRes, _, err := c.spanNameGetter.Execute(ctx, ottllog.NewTransformContext(lr, scope, res))
+				if err != nil {
+					c.settings.Logger.Info("lol", zap.Any("ahahah", nameRes))
+					return traces, err
+				}
+				name := *nameRes.(*string)
+				c.settings.Logger.Info("lol", zap.Any("ahahah", name))
+
+				span := spans.AppendEmpty()
+				span.SetName(*nameRes.(*string))
+				span.SetTraceID(tc.TraceID)
+				span.SetSpanID(tc.SpanID)
+				span.SetParentSpanID(tc.ParentSpanID)
+				if err != nil {
+					return traces, err
+				}
 			}
 		}
 	}
-	return nil
+	return traces, nil
 }
-
-// aggregateMetrics aggregates the raw metrics from the input trace data.
-//
-// Metrics are grouped by resource attributes.
-// Each metric is identified by a key that is built from the service name
-// and span metadata such as name, kind, status_code and any additional
-// dimensions the user has configured.
-// func (c *logtospan) aggregateMetrics(traces ptrace.Traces) {
-// 	for i := 0; i < traces.ResourceSpans().Len(); i++ {
-// 		rspans := traces.ResourceSpans().At(i)
-// 		resourceAttr := rspans.Resource().Attributes()
-// 		serviceAttr, ok := resourceAttr.Get(conventions.AttributeServiceName)
-// 		if !ok {
-// 			continue
-// 		}
-//
-// 		rm := c.getOrCreateResourceMetrics(resourceAttr)
-// 		sums := rm.sums
-// 		histograms := rm.histograms
-//
-// 		unitDivider := unitDivider(c.config.Histogram.Unit)
-// 		serviceName := serviceAttr.Str()
-// 		ilsSlice := rspans.ScopeSpans()
-// 		for j := 0; j < ilsSlice.Len(); j++ {
-// 			ils := ilsSlice.At(j)
-// 			spans := ils.Spans()
-// 			for k := 0; k < spans.Len(); k++ {
-// 				span := spans.At(k)
-// 				// Protect against end timestamps before start timestamps. Assume 0 duration.
-// 				duration := float64(0)
-// 				startTime := span.StartTimestamp()
-// 				endTime := span.EndTimestamp()
-// 				if endTime > startTime {
-// 					duration = float64(endTime-startTime) / float64(unitDivider)
-// 				}
-// 				key := c.buildKey(serviceName, span, c.dimensions, resourceAttr)
-//
-// 				attributes, ok := c.metricKeyToDimensions.Get(key)
-// 				if !ok {
-// 					attributes = c.buildAttributes(serviceName, span, resourceAttr)
-// 					c.metricKeyToDimensions.Add(key, attributes)
-// 				}
-//
-// 				// aggregate histogram metrics
-// 				h := histograms.GetOrCreate(key, attributes)
-// 				h.Observe(duration)
-// 				if !span.TraceID().IsEmpty() {
-// 					h.AddExemplar(span.TraceID(), span.SpanID(), duration)
-// 				}
-//
-// 				// aggregate sums metrics
-// 				s := sums.GetOrCreate(key, attributes)
-// 				s.Add(1)
-// 			}
-// 		}
-// 	}
-// }
