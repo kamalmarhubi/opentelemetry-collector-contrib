@@ -15,27 +15,29 @@
 package internal // import "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/googlecloudpubsubreceiver/internal"
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
-	"strings"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"strconv"
-
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/iancoleman/strcase"
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/types/known/anypb"
-	"google.golang.org/protobuf/types/known/structpb"
-	"google.golang.org/protobuf/types/known/emptypb"
-	"google.golang.org/protobuf/types/known/timestamppb"
-	"google.golang.org/protobuf/types/known/durationpb"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"cloud.google.com/go/logging/apiv2/loggingpb"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
+	"google.golang.org/genproto/googleapis/api/monitoredres"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 var invalidTraceID = [16]byte{}
@@ -72,13 +74,26 @@ func spanIDStrToSpanIDBytes(spanIDStr string) [8]byte {
 	return spanIDSlice
 }
 
-func TranslateLogEntry(ctx context.Context, logger *zap.Logger, data []byte) (pcommon.Resource, plog.LogRecord, error) {
-	var logEntry loggingpb.LogEntry
+var desc protoreflect.MessageDescriptor
+var descOnce sync.Once
 
+func getLogEntryDescriptor() protoreflect.MessageDescriptor {
+	descOnce.Do(func() {
+		var logEntry loggingpb.LogEntry
+
+		desc = logEntry.ProtoReflect().Descriptor()
+	})
+
+	return desc
+}
+
+func TranslateLogEntry(ctx context.Context, logger *zap.Logger, data []byte) (pcommon.Resource, plog.LogRecord, error) {
 	lr := plog.NewLogRecord()
 	res := pcommon.NewResource()
 
-	err := protojson.Unmarshal(data, &logEntry)
+	var src map[string]json.RawMessage
+	err := json.Unmarshal(data, &src)
+
 	if err != nil {
 		return res, lr, err
 	}
@@ -86,78 +101,110 @@ func TranslateLogEntry(ctx context.Context, logger *zap.Logger, data []byte) (pc
 	resAttrs := res.Attributes()
 	attrs := lr.Attributes()
 
-
-
-	reflected := logEntry.ProtoReflect()
-	reflected.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
-		jsonName := fd.JSONName()
-		switch(jsonName) {
+	for k, v := range src {
+		switch k {
 		// Unpack as defiend in semantic conventions:
 		//   https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/data-model-appendix.md#google-cloud-logging
 		case "timestamp":
 			// timestamp -> Timestamp
-			lr.SetTimestamp(pcommon.NewTimestampFromTime(logEntry.GetTimestamp().AsTime()))
-			reflected.Clear(fd)
+			var t time.Time
+			err = json.Unmarshal(v, &t)
+			if err != nil {
+				return res, lr, err
+			}
+			lr.SetTimestamp(pcommon.NewTimestampFromTime(t))
+			delete(src, k)
 		case "resource":
 			// resource -> Resource
 			// mapping type -> gcp.resource_type
 			// labels -> gcp.<label>
-			monitoredResource := logEntry.GetResource()
-			resType := monitoredResource.GetType()
-			resAttrs.EnsureCapacity(len(monitoredResource.GetLabels()) + 1)
-			resAttrs.PutStr("gcp.resource_type", resType)
-			for k, v := range(monitoredResource.GetLabels()) {
+			var protoRes monitoredres.MonitoredResource
+			err = protojson.Unmarshal(v, &protoRes)
+
+			resAttrs.EnsureCapacity(len(protoRes.GetLabels()) + 1)
+			resAttrs.PutStr("gcp.resource_type", protoRes.GetType())
+			for k, v := range protoRes.GetLabels() {
 				resAttrs.PutStr(strcase.ToSnakeWithIgnore(fmt.Sprintf("gcp.%v", k), "."), v)
 			}
-			reflected.Clear(fd)
+			delete(src, k)
 		case "logName":
+			var logName string
+			err = json.Unmarshal(v, &logName)
+			if err != nil {
+				return res, lr, err
+			}
 			// log_name -> Attributes[“gcp.log_name”]
-			attrs.PutStr("gcp.log_name", logEntry.GetLogName())
-		case "jsonPayload":
+			attrs.PutStr("gcp.log_name", logName)
+			delete(src, k)
+		case "jsonPayload", "textPayload":
 			// {json,proto,text}_payload -> Body
-			translateStruct(lr.Body().SetEmptyMap(), logEntry.GetJsonPayload())
-			reflected.Clear(fd)
+			var payload any
+			err = json.Unmarshal(v, &payload)
+			if err != nil {
+				return res, lr, err
+			}
+			lr.Body().FromRaw(payload)
+			delete(src, k)
 		case "protoPayload":
 			// {json,proto,text}_payload -> Body
-			translateAny(lr.Body().SetEmptyMap(), logEntry.GetProtoPayload())
-			reflected.Clear(fd)
-		case "textPayload":
-			// {json,proto,text}_payload -> Body
-			lr.Body().SetStr(logEntry.GetTextPayload())
-			reflected.Clear(fd)
+			err = translateInto(lr.Body().SetEmptyMap(), (&anypb.Any{}).ProtoReflect().Descriptor(), v)
+			if err != nil {
+				return res, lr, err
+			}
+			delete(src, k)
 		case "severity":
+			var severity string
+			err = json.Unmarshal(v, &severity)
+			if err != nil {
+				return res, lr, err
+			}
 			// severity -> Severity
 			// According to the spec, this is the original string representation of
 			// the severity as it is known at the source:
 			//   https://opentelemetry.io/docs/reference/specification/logs/data-model/#field-severitytext
-			lr.SetSeverityText(logEntry.GetSeverity().String())
-			reflected.Clear(fd)
+			lr.SetSeverityText(severity)
+			delete(src, k)
 		case "trace":
-			lr.SetTraceID(cloudLoggingTraceToTraceIDBytes(logEntry.GetTrace()))
-			reflected.Clear(fd)
+			var trace string
+			err = json.Unmarshal(v, &trace)
+			if err != nil {
+				return res, lr, err
+			}
+			lr.SetTraceID(cloudLoggingTraceToTraceIDBytes(trace))
+			delete(src, k)
 		case "spanId":
-			lr.SetSpanID(spanIDStrToSpanIDBytes(logEntry.GetSpanId()))
-			reflected.Clear(fd)
+			var spanId string
+			err = json.Unmarshal(v, &spanId)
+			if err != nil {
+				return res, lr, err
+			}
+			lr.SetSpanID(spanIDStrToSpanIDBytes(spanId))
+			delete(src, k)
 		case "labels":
+			var labels map[string]string
+			err = json.Unmarshal(v, &labels)
+			if err != nil {
+				return res, lr, err
+			}
 			// labels -> Attributes
-			for k, v := range(logEntry.GetLabels()) {
+			for k, v := range labels {
 				attrs.PutStr(k, v)
 			}
-			reflected.Clear(fd)
+			delete(src, k)
 		case "httpRequest":
-			// http_request -> Attributes[“gcp.http_request”]
-			if httpRequest := logEntry.GetHttpRequest(); httpRequest != nil {
-				httpRequestAttrs := attrs.PutEmptyMap("gcp.http_request")
-				translateInto(httpRequestAttrs, httpRequest.ProtoReflect(), snakeifyKeys)
+			httpRequestAttrs := attrs.PutEmptyMap("gcp.http_request")
+			err = translateInto(httpRequestAttrs, getLogEntryDescriptor().Fields().ByJSONName(k).Message(), v, snakeifyKeys)
+			if err != nil {
+				return res, lr, err
 			}
-			reflected.Clear(fd)
+			delete(src, k)
 		default:
 		}
-		return true
-	})
+	}
+
 	// All other fields -> Attributes["gcp.*"]
 	// At this point we cleared all the fields that have special handling.
-	translateInto(attrs, reflected, preserveDst, prefixKeys("gcp."), snakeifyKeys)
+	translateInto(attrs, getLogEntryDescriptor(), src, preserveDst, prefixKeys("gcp."), snakeifyKeys)
 
 	return res, lr, nil
 }
@@ -165,23 +212,23 @@ func TranslateLogEntry(ctx context.Context, logger *zap.Logger, data []byte) (pc
 // should only translate maps?
 
 func snakeify(s string) string {
-  return strcase.ToSnakeWithIgnore(s, ".")
+	return strcase.ToSnakeWithIgnore(s, ".")
 }
 
-func prefix(p string) func (string) string {
+func prefix(p string) func(string) string {
 	return func(s string) string {
-		return p+s
+		return p + s
 	}
 }
 
 type translateOptions struct {
-	keyMappers []func(string) string
-	preserveDst bool
+	keyMappers   []func(string) string
+	preserveDst  bool
 	useJsonNames bool
 }
 
 func NewTranslateOptions() translateOptions {
-	return translateOptions{ useJsonNames: true }
+	return translateOptions{useJsonNames: true}
 }
 
 type opt func(*translateOptions)
@@ -212,38 +259,81 @@ func (opts translateOptions) mapKey(s string) string {
 	return s
 }
 
-func (opts translateOptions) translateValue(dst pcommon.Value, fd protoreflect.FieldDescriptor, src protoreflect.Value) {
+func getType(src json.RawMessage) string {
+	dec := json.NewDecoder(bytes.NewReader(src))
+	tok, err := dec.Token()
+	if err != nil {
+		return "invalid json"
+	}
+	switch t := tok.(type) {
+	case json.Delim:
+		switch t {
+		case '[':
+			return "array"
+		case '{':
+			return "object"
+		default:
+			return "invalid json"
+		}
+	case bool:
+		return "bool"
+	case float64, json.Number:
+		return "number"
+	case string:
+		return "string"
+	case nil:
+		return "null"
+	default:
+		return "unknown"
+	}
+}
+
+func translateStr(dst pcommon.Value, src json.RawMessage) error {
+	var val string
+	err := json.Unmarshal(src, &val)
+	if err != nil {
+		return err
+	}
+	dst.SetStr(val)
+	return nil
+}
+
+func translateRaw(dst pcommon.Value, src json.RawMessage) error {
+	var val any
+	err := json.Unmarshal(src, &val)
+	if err != nil {
+		return err
+	}
+	dst.FromRaw(val)
+	return nil
+}
+
+func (opts translateOptions) translateValue(dst pcommon.Value, fd protoreflect.FieldDescriptor, src json.RawMessage) error {
+	var err error
 	switch fd.Kind() {
 	case protoreflect.MessageKind:
-		switch reflected := src.Message(); unreflected := reflected.Interface().(type) {
-		case *durationpb.Duration, *timestamppb.Timestamp:
-			// HACK: use protojson to format these back to how they were present in the original message; requires stripping the quotes.
-			str := protojson.Format(unreflected)
-			str, err := strconv.Unquote(str)
-			if err != nil {
-				pcommon.NewValueEmpty().CopyTo(dst)
-			}
-			dst.SetStr(str)
-		case *structpb.Value:
-			translateWktValue(dst, unreflected)
-		case *wrapperspb.DoubleValue:
-			dst.FromRaw(unreflected.GetValue())
-		case *wrapperspb.FloatValue:
-			dst.FromRaw(unreflected.GetValue())
-		case *wrapperspb.Int64Value:
-			dst.FromRaw(unreflected.GetValue())
-		case *wrapperspb.UInt64Value:
-			dst.FromRaw(unreflected.GetValue())
-		case *wrapperspb.Int32Value:
-			dst.FromRaw(unreflected.GetValue())
-		case *wrapperspb.UInt32Value:
-			dst.FromRaw(unreflected.GetValue())
-		case *wrapperspb.BoolValue:
-			dst.FromRaw(unreflected.GetValue())
-		case *wrapperspb.StringValue:
-			dst.FromRaw(unreflected.GetValue())
-		case *wrapperspb.BytesValue:
-			dst.FromRaw(unreflected.GetValue())
+		msg := fd.Message()
+		switch fd.Message().FullName() {
+		case "google.protobuf.Duration", "google.protobuf.Timestamp":
+			// protojson represents both of these as strings
+			return translateStr(dst, src)
+		case "google.protobuf.Struct", "google.protobuf.Value":
+			return translateRaw(dst, src)
+		case
+			"google.protobuf.BoolValue",
+			"google.protobuf.BytesValue",
+			"google.protobuf.DoubleValue",
+			"google.protobuf.FloatValue",
+			"google.protobuf.Int32Value",
+			"google.protobuf.Int64Value",
+			"google.protobuf.StringValue",
+			"google.protobuf.UInt32Value",
+			"google.protobuf.UInt64Value":
+			// All the wrapper types have a single field with name
+			// `value` and field number 1, and are represented in
+			// protojson without the wrapping.
+			innerFd := fd.Message().Fields().ByNumber(1)
+			opts.translateValue(dst, innerFd, src)
 		default:
 			var m pcommon.Map
 			switch dst.Type() {
@@ -252,126 +342,218 @@ func (opts translateOptions) translateValue(dst pcommon.Value, fd protoreflect.F
 			default:
 				m = dst.SetEmptyMap()
 			}
-			translateInto(m, reflected)
+			return translateInto(m, msg, src)
 		}
 	case protoreflect.EnumKind:
-		enumValue := fd.Enum().Values().ByNumber(src.Enum())
-		if enumValue != nil {
-			dst.SetStr(string(enumValue.Name()))
+		// protojson accepts either string name or enum int value; try both.
+		if translateStr(dst, src) == nil {
+			return nil
 		}
-	case
-	// All the scalars can be handled by going via go native types.
-	protoreflect.BoolKind,
-	// Signed ints
-	protoreflect.Int32Kind, protoreflect.Int64Kind,
-	protoreflect.Sfixed32Kind, protoreflect.Sfixed64Kind,
-	protoreflect.Sint32Kind, protoreflect.Sint64Kind,
-	// Unsigned ints
-	protoreflect.Uint32Kind, protoreflect.Uint64Kind,
-	protoreflect.Fixed32Kind, protoreflect.Fixed64Kind,
-	// Floats
-	protoreflect.FloatKind, protoreflect.DoubleKind,
-	// Not-quite-scalars?
-	protoreflect.BytesKind,
-	protoreflect.StringKind:
-		err := dst.FromRaw(src.Interface())
+
+		enum := fd.Enum()
+		var i int32
+		if err = json.Unmarshal(src, &i); err != nil {
+			return fmt.Errorf("wrong type for enum: %v", getType(src))
+		}
+		enumValue := enum.Values().ByNumber(protoreflect.EnumNumber(i))
+		if enumValue == nil {
+			return fmt.Errorf("%v has no enum value for %v", enum.FullName(), i)
+		}
+
+		dst.SetStr(string(enumValue.Name()))
+	case protoreflect.BoolKind:
+		var val bool
+		err := json.Unmarshal(src, &val)
 		if err != nil {
-			pcommon.NewValueEmpty().CopyTo(dst)
+			return err
 		}
+		dst.SetBool(val)
+	case protoreflect.Int32Kind,
+		protoreflect.Uint32Kind,
+		protoreflect.Sfixed32Kind,
+		protoreflect.Fixed32Kind,
+		protoreflect.Sint32Kind,
+		protoreflect.Int64Kind,
+		protoreflect.Uint64Kind,
+		protoreflect.Sfixed64Kind,
+		protoreflect.Fixed64Kind,
+		protoreflect.Sint64Kind:
+		// The protojson encoding accepts either string or number for
+		// integer types, so try both.
+		var val int64
+		if json.Unmarshal(src, &val) == nil {
+			dst.SetInt(val)
+			return nil
+		}
+
+		var s string
+		if err = json.Unmarshal(src, &s); err != nil {
+			return err
+		}
+		if val, err = strconv.ParseInt(s, 10, 64); err != nil {
+			return err
+		}
+		dst.SetInt(val)
+		return nil
+	case protoreflect.FloatKind, protoreflect.DoubleKind:
+		var val float64
+		err := json.Unmarshal(src, &val)
+		if err != nil {
+			return err
+		}
+		dst.SetDouble(val)
+		return nil
+	case protoreflect.BytesKind:
+		var val []byte
+		err := json.Unmarshal(src, &val)
+		if err != nil {
+			return err
+		}
+		dst.SetEmptyBytes().Append(val...)
+		return nil
+	case protoreflect.StringKind:
+		return translateStr(dst, src)
 	case protoreflect.GroupKind:
-		// proto3 has no groups.
-		break
+		return errors.New("unexpected group")
 	default:
-		break
+		return errors.New("unknown field kind")
 	}
+	return nil
 }
 
-func (opts translateOptions) translateList(dst pcommon.Slice, fd protoreflect.FieldDescriptor, list protoreflect.List) {
-	for i := 0; i < list.Len(); i++ {
-		item := list.Get(i)
-		opts.translateValue(dst.AppendEmpty(), fd, item)
+func (opts translateOptions) translateList(dst pcommon.Slice, fd protoreflect.FieldDescriptor, src json.RawMessage) error {
+	var msg []json.RawMessage
+	if err := json.Unmarshal(src, &msg); err != nil {
+		return err
 	}
-}
 
-func (opts translateOptions) translateMap(dst pcommon.Map, fd protoreflect.FieldDescriptor, m protoreflect.Map) {
-	m.Range(func (k protoreflect.MapKey, v protoreflect.Value) bool {
-		opts.translateValue(dst.PutEmpty(k.String()), fd, v)
-		return true
-	})
-}
-func translateAny(dst pcommon.Map, src *anypb.Any) {
-	if src == nil {
-		return
-	}
-	// Mimic the protojson marshaling of Any.
-	inner, err := src.UnmarshalNew()
-	if err == nil {
-		translateInto(dst, inner.ProtoReflect())
-	}
-	dst.PutStr("@type", src.TypeUrl)
-}
-
-func translateWktValue(dst pcommon.Value, src *structpb.Value) {
-	if src != nil {
-		dst.FromRaw(src.AsInterface())
-	}
-}
-
-func translateStruct(dst pcommon.Map, src *structpb.Struct) {
-	if src == nil {
-		return
-	}
-	for k, v := range src.Fields {
-		if v != nil {
-			translateWktValue(dst.PutEmpty(k), v)
+	for _, v := range msg {
+		err := opts.translateValue(dst.AppendEmpty(), fd, v)
+		if err != nil {
+			return err
 		}
 	}
+	return nil
 }
 
-func (opts translateOptions) translateMessage(dst pcommon.Map, src protoreflect.Message) {
-	if (!opts.preserveDst) {
+func (opts translateOptions) translateMap(dst pcommon.Map, fd protoreflect.FieldDescriptor, src json.RawMessage) error {
+	var msg map[string]json.RawMessage
+	if err := json.Unmarshal(src, &msg); err != nil {
+		return err
+	}
+	for k, v := range msg {
+		err := opts.translateValue(dst.PutEmpty(k), fd.MapValue(), v)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func translateAny(dst pcommon.Map, src map[string]json.RawMessage) error {
+	// protojson reprsents Any as the JSON representation of the actual
+	// message, plus a special @type field containing the type URL of the
+	// message.
+	typeUrl, ok := src["@type"]
+	if !ok {
+		return errors.New("no @type member in Any message")
+	}
+	var typeUrlStr string
+	if err := json.Unmarshal(typeUrl, &typeUrlStr); err != nil {
+		return err
+	}
+	delete(src, "@type")
+
+	msgType, err := protoregistry.GlobalTypes.FindMessageByURL(typeUrlStr)
+	if errors.Is(err, protoregistry.NotFound) {
+		// If we don't have the type, we do a best-effort JSON parse;
+		// some ints might be floats or strings.
+		for k, v := range src {
+			var val any
+			err := json.Unmarshal(v, &val)
+			if err !=  nil {
+				return nil
+			}
+			dst.PutEmpty(k).FromRaw(val)
+		}
+		return nil
+	}
+
+	err = translateInto(dst, msgType.Descriptor(), src)
+	if err != nil {
+		return err
+	}
+
+	dst.PutStr("@type", typeUrlStr)
+	return nil
+}
+
+func (opts translateOptions) translateMessage(dst pcommon.Map, desc protoreflect.MessageDescriptor, src map[string]json.RawMessage) error {
+	log.Printf("??? %v", desc.FullName())
+	if !opts.preserveDst {
 		dst.Clear()
 	}
 
 	// Handle well-known aggregate types.
-	switch message := src.Interface().(type) {
-	case *anypb.Any:
-		translateAny(dst, message)
-		return
-	case *structpb.Struct:
-		translateStruct(dst, message)
-		return
-	case *emptypb.Empty:
+	switch desc.FullName() {
+	case "google.protobuf.Any":
+		return translateAny(dst, src)
+	case "google.protobuf.Struct":
+		for k, v := range src {
+			var val any
+			if err := json.Unmarshal(v, &val); err != nil {
+				return err
+			}
+			dst.PutEmpty(k).FromRaw(val)
+		}
+		return nil
+	case "google.protobuf.Empty":
 		dst.Clear()
-		return
+		return nil
 	default:
 	}
 
-	src.Range(func (fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
-		key := opts.mapKey(fd.JSONName())
-
+	for k, v := range src {
+		log.Printf("JKLFD %v", k)
+		key := opts.mapKey(k)
+		fd := desc.Fields().ByJSONName(k)
+		if fd == nil {
+			return fmt.Errorf("%v has no known field with JSON name %v", desc.FullName(), k)
+		}
+		var err error
 		switch {
 		case fd.IsList():
-			opts.translateList(dst.PutEmptySlice(key), fd, v.List())
+			err = opts.translateList(dst.PutEmptySlice(key), fd, v)
 		case fd.IsMap():
-			opts.translateMap(dst.PutEmptyMap(key), fd, v.Map())
+			err = opts.translateMap(dst.PutEmptyMap(key), fd, v)
 		default:
-			if fd.Cardinality() != protoreflect.Optional {
-				// TODO: error out ? report metric ? ignore ?
-				panic("should not have other cardinality at this point")
-			}
-			opts.translateValue(dst.PutEmpty(key), fd, v)
+			err = opts.translateValue(dst.PutEmpty(key), fd, v)
 		}
+		if err != nil {
+			return err
+		}
+	}
 
-		return true
-	})
+	return nil
 }
 
-func translateInto(dst pcommon.Map, src protoreflect.Message, opts ...opt) {
+func translateInto(dst pcommon.Map, desc protoreflect.MessageDescriptor, src any, opts ...opt) error {
+	log.Printf("WTF %v", desc.FullName())
+	var toTranslate map[string]json.RawMessage
+
+	switch msg := src.(type) {
+	case json.RawMessage:
+		err := json.Unmarshal(msg, &toTranslate)
+		if err != nil {
+			return err
+		}
+	case map[string]json.RawMessage:
+		toTranslate = msg
+	}
+
 	options := translateOptions{}
 	for _, opt := range opts {
 		opt(&options)
 	}
 
-	options.translateMessage(dst, src)
+	return options.translateMessage(dst, desc, toTranslate)
 }
