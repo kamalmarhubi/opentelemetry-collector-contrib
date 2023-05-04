@@ -18,7 +18,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
-	"encoding/json"
+	stdjson "encoding/json"
+	jsoniter "github.com/json-iterator/go"
+
 	"errors"
 	"fmt"
 	"log"
@@ -39,6 +41,9 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/known/anypb"
 )
+
+
+var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 var invalidTraceID = [16]byte{}
 var invalidSpanID = [8]byte{}
@@ -91,7 +96,7 @@ func TranslateLogEntry(ctx context.Context, logger *zap.Logger, data []byte) (pc
 	lr := plog.NewLogRecord()
 	res := pcommon.NewResource()
 
-	var src map[string]json.RawMessage
+	var src map[string]stdjson.RawMessage
 	err := json.Unmarshal(data, &src)
 
 	if err != nil {
@@ -259,14 +264,14 @@ func (opts translateOptions) mapKey(s string) string {
 	return s
 }
 
-func getType(src json.RawMessage) string {
-	dec := json.NewDecoder(bytes.NewReader(src))
+func getType(src stdjson.RawMessage) string {
+	dec := stdjson.NewDecoder(bytes.NewReader(src))
 	tok, err := dec.Token()
 	if err != nil {
 		return "invalid json"
 	}
 	switch t := tok.(type) {
-	case json.Delim:
+	case stdjson.Delim:
 		switch t {
 		case '[':
 			return "array"
@@ -277,7 +282,7 @@ func getType(src json.RawMessage) string {
 		}
 	case bool:
 		return "bool"
-	case float64, json.Number:
+	case float64, stdjson.Number:
 		return "number"
 	case string:
 		return "string"
@@ -288,7 +293,7 @@ func getType(src json.RawMessage) string {
 	}
 }
 
-func translateStr(dst pcommon.Value, src json.RawMessage) error {
+func translateStr(dst pcommon.Value, src stdjson.RawMessage) error {
 	var val string
 	err := json.Unmarshal(src, &val)
 	if err != nil {
@@ -298,7 +303,7 @@ func translateStr(dst pcommon.Value, src json.RawMessage) error {
 	return nil
 }
 
-func translateRaw(dst pcommon.Value, src json.RawMessage) error {
+func translateRaw(dst pcommon.Value, src stdjson.RawMessage) error {
 	var val any
 	err := json.Unmarshal(src, &val)
 	if err != nil {
@@ -308,7 +313,7 @@ func translateRaw(dst pcommon.Value, src json.RawMessage) error {
 	return nil
 }
 
-func (opts translateOptions) translateValue(dst pcommon.Value, fd protoreflect.FieldDescriptor, src json.RawMessage) error {
+func (opts translateOptions) translateValue(dst pcommon.Value, fd protoreflect.FieldDescriptor, src stdjson.RawMessage) error {
 	var err error
 	switch fd.Kind() {
 	case protoreflect.MessageKind:
@@ -421,8 +426,8 @@ func (opts translateOptions) translateValue(dst pcommon.Value, fd protoreflect.F
 	return nil
 }
 
-func (opts translateOptions) translateList(dst pcommon.Slice, fd protoreflect.FieldDescriptor, src json.RawMessage) error {
-	var msg []json.RawMessage
+func (opts translateOptions) translateList(dst pcommon.Slice, fd protoreflect.FieldDescriptor, src stdjson.RawMessage) error {
+	var msg []stdjson.RawMessage
 	if err := json.Unmarshal(src, &msg); err != nil {
 		return err
 	}
@@ -436,8 +441,8 @@ func (opts translateOptions) translateList(dst pcommon.Slice, fd protoreflect.Fi
 	return nil
 }
 
-func (opts translateOptions) translateMap(dst pcommon.Map, fd protoreflect.FieldDescriptor, src json.RawMessage) error {
-	var msg map[string]json.RawMessage
+func (opts translateOptions) translateMap(dst pcommon.Map, fd protoreflect.FieldDescriptor, src stdjson.RawMessage) error {
+	var msg map[string]stdjson.RawMessage
 	if err := json.Unmarshal(src, &msg); err != nil {
 		return err
 	}
@@ -449,7 +454,7 @@ func (opts translateOptions) translateMap(dst pcommon.Map, fd protoreflect.Field
 	}
 	return nil
 }
-func translateAny(dst pcommon.Map, src map[string]json.RawMessage) error {
+func translateAny(dst pcommon.Map, src map[string]stdjson.RawMessage) error {
 	// protojson reprsents Any as the JSON representation of the actual
 	// message, plus a special @type field containing the type URL of the
 	// message.
@@ -487,7 +492,7 @@ func translateAny(dst pcommon.Map, src map[string]json.RawMessage) error {
 	return nil
 }
 
-func (opts translateOptions) translateMessage(dst pcommon.Map, desc protoreflect.MessageDescriptor, src map[string]json.RawMessage) error {
+func (opts translateOptions) translateMessage(dst pcommon.Map, desc protoreflect.MessageDescriptor, src map[string]stdjson.RawMessage) error {
 	log.Printf("??? %v", desc.FullName())
 	if !opts.preserveDst {
 		dst.Clear()
@@ -538,15 +543,15 @@ func (opts translateOptions) translateMessage(dst pcommon.Map, desc protoreflect
 
 func translateInto(dst pcommon.Map, desc protoreflect.MessageDescriptor, src any, opts ...opt) error {
 	log.Printf("WTF %v", desc.FullName())
-	var toTranslate map[string]json.RawMessage
+	var toTranslate map[string]stdjson.RawMessage
 
 	switch msg := src.(type) {
-	case json.RawMessage:
+	case stdjson.RawMessage:
 		err := json.Unmarshal(msg, &toTranslate)
 		if err != nil {
 			return err
 		}
-	case map[string]json.RawMessage:
+	case map[string]stdjson.RawMessage:
 		toTranslate = msg
 	}
 
