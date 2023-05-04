@@ -25,13 +25,16 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottllog"
 )
 
-func TraceContextFunctions() map[string]interface{} {
-	funcs := map[string]interface{}{}
+func TraceContextFunctions() map[string]ottl.Factory[ottllog.TransformContext] {
+	return ottl.CreateFactoryMap(newFromLogRecordFactory())
+}
 
-	funcs["FromLogRecord"] = fromLogRecord
-	// funcs["HasAttrKeyOnDatapoint"] = hasAttributeKeyOnDatapoint
-	// funcs["HasAttrOnDatapoint"] = hasAttributeOnDatapoint
-	return funcs
+func newFromLogRecordFactory() ottl.Factory[ottllog.TransformContext] {
+	return ottl.NewFactory("FromLogRecord", &struct{}{}, createFromLogRecordFunction)
+}
+
+func createFromLogRecordFunction(fCtx ottl.FunctionContext, oArgs ottl.Arguments) (ottl.ExprFunc[ottllog.TransformContext], error) {
+	return fromLogRecord()
 }
 
 type TraceContext struct {

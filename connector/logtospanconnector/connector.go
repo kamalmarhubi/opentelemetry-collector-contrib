@@ -29,6 +29,8 @@ import (
 	// "go.opentelemetry.io/collector/pdata/ptrace"
 	// conventions "go.opentelemetry.io/collector/semconv/v1.6.1"
 	"go.uber.org/zap"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottllog"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/logtospanconnector/internal"
 	// "github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector/internal/cache"
@@ -40,10 +42,12 @@ import (
 
 type logtospan struct {
 	lock   sync.Mutex
-	logger *zap.Logger
+	settings component.TelemetrySettings
+	
 	config Config
 
 	logsConsumer consumer.Logs
+	traceContextGetter ottl.Statements[ottllog.TransformContext]
 
 	done    chan struct{}
 	started bool
@@ -51,13 +55,23 @@ type logtospan struct {
 	shutdownOnce sync.Once
 }
 
-func newConnector(logger *zap.Logger, config component.Config) (*logtospan, error) {
-	logger.Info("Building logtospan connector")
+func newConnector(settings component.TelemetrySettings, config component.Config) (*logtospan, error) {
+	settings.Logger.Info("Building logtospan connector")
 	cfg := config.(*Config)
 
+	traceContextParser, err := ottllog.NewParser(internal.TraceContextFunctions(), settings)
+	if err != nil {
+		return nil, err
+	}
+	traceContextStatement, err := traceContextParser.ParseStatement(cfg.TraceContext)
+	if err != nil {
+		return nil, err
+	}
+
 	return &logtospan{
-		logger:                logger,
+		settings: settings, 
 		config:                *cfg,
+		traceContextGetter: ottl.NewStatements([]*ottl.Statement[ottllog.TransformContext]{traceContextStatement}, settings),
 		done:                  make(chan struct{}),
 	}, nil
 }
@@ -65,7 +79,7 @@ func newConnector(logger *zap.Logger, config component.Config) (*logtospan, erro
 
 // Start implements the component.Component interface.
 func (c *logtospan) Start(ctx context.Context, _ component.Host) error {
-	c.logger.Info("Starting logtospan connector")
+	c.settings.Logger.Info("Starting logtospan connector")
 
 	c.started = true
 	go func() {
@@ -83,7 +97,7 @@ func (c *logtospan) Start(ctx context.Context, _ component.Host) error {
 // Shutdown implements the component.Component interface.
 func (c *logtospan) Shutdown(context.Context) error {
 	c.shutdownOnce.Do(func() {
-		c.logger.Info("Shutting down logtospan connector")
+		c.settings.Logger.Info("Shutting down logtospan connector")
 		if c.started {
 			c.started = false
 		}
@@ -98,25 +112,28 @@ func (c *logtospan) Capabilities() consumer.Capabilities {
 
 // ConsumeTraces implements the consumer.Traces interface.
 // It aggregates the trace data to generate metrics.
-func (c *logtospan) ConsumeLogs(_ context.Context, logs plog.Logs) error {
+func (c *logtospan) ConsumeLogs(ctx context.Context, logs plog.Logs) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	c.convertLogs(logs)
+	c.convertLogs(ctx, logs)
 	return nil
 }
 
-func (c *logtospan) convertLogs(logs plog.Logs) error {
+func (c *logtospan) convertLogs(ctx context.Context, logs plog.Logs) error {
 	for i := 0; i < logs.ResourceLogs().Len(); i++ {
 		rlogs := logs.ResourceLogs().At(i)
+		res := rlogs.Resource()
 
 		ilsSlice := rlogs.ScopeLogs()
 		for j := 0; j < ilsSlice.Len(); j++ {
 			ils := ilsSlice.At(j)
+			is := ils.Scope()
 			lrs := ils.LogRecords()
 			for k := 0; k < lrs.Len(); k++ {
 
 				lr := lrs.At(k)
-				c.logger.Info("lol", zap.Any("ahahah", lr), zap.Any("jkfdjs", internal.TraceContextFunctions()))
+				tc, ran, err := c.traceContextGetter.Execute(ctx, ottllog.NewTransformContext(lr, is, res))
+				c.settings.Logger.Info("lol", zap.Any("ahahah", lr), zap.Any("jkfdjs", internal.TraceContextFunctions()))
 			}
 		}
 	}
