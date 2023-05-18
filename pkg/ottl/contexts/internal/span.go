@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"time"
+	"log"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -34,6 +35,7 @@ var SpanSymbolTable = map[ottl.EnumSymbol]ottl.Enum{
 }
 
 func SpanPathGetSetter[K SpanContext](path []ottl.Field) (ottl.GetSetter[K], error) {
+	log.Printf("WWE ARE HERE %v", path)
 	if len(path) == 0 {
 		return accessSpan[K](), nil
 	}
@@ -47,6 +49,7 @@ func SpanPathGetSetter[K SpanContext](path []ottl.Field) (ottl.GetSetter[K], err
 			return accessStringTraceID[K](), nil
 		}
 	case "span_id":
+		log.Printf("IT'S A SPAN_ID??")
 		if len(path) == 1 {
 			return accessSpanID[K](), nil
 		}
@@ -67,6 +70,7 @@ func SpanPathGetSetter[K SpanContext](path []ottl.Field) (ottl.GetSetter[K], err
 			return accessStringParentSpanID[K](), nil
 		}
 	case "name":
+		log.Printf("WHY NOT NAME")
 		return accessSpanName[K](), nil
 	case "kind":
 		if len(path) == 1 {
@@ -276,6 +280,13 @@ func accessSpanName[K SpanContext]() ottl.StandardGetSetter[K] {
 			return tCtx.GetSpan().Name(), nil
 		},
 		Setter: func(ctx context.Context, tCtx K, val interface{}) error {
+			switch v := val.(type) {
+			case pcommon.Map:
+				log.Printf("WTF DO WE EVEN HAVE??? %v", v.AsRaw())
+			case pcommon.Value:
+				log.Printf("WTF DO WE EVEN HAVE??? %v", v.AsRaw())
+
+			}
 			if str, ok := val.(string); ok {
 				tCtx.GetSpan().SetName(str)
 			}

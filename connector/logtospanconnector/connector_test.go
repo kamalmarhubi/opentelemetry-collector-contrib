@@ -20,6 +20,8 @@ import (
 var validSpanID = pcommon.SpanID([8]byte{0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba,    })
 var validTraceID = pcommon.TraceID([16]byte{0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba,    0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba,    })
 
+var _ = fuckOff(log.Printf)
+
 func Test_convertLogRecord(t *testing.T) {
 	t.Fail()
 	tests := []struct {
@@ -32,7 +34,8 @@ func Test_convertLogRecord(t *testing.T) {
 	}{
 		{
 			name: "no logs",
-			config: &Config{TraceContext: "from_log_record()", SpanName: "from(body)"},
+			config: &Config{Statements: []string{
+			}},
 			input: func() plog.LogRecord {
 				return plog.NewLogRecord()
 			},
@@ -40,19 +43,24 @@ func Test_convertLogRecord(t *testing.T) {
 		},
 		{
 			name: "valid trace context",
-			config: &Config{TraceContext: "from_log_record()", SpanName: "from(body)"},
+			config: &Config{Statements: []string{
+				`set(span.name, log.attributes["hi"])`,
+				`set(span.span_id.string, "aabbccddeeff0011")`,
+			}},
 			res: pcommon.NewResource(),
 			input: func() plog.LogRecord {
 				lr := plog.NewLogRecord()
 				lr.SetSpanID(validSpanID)
 				lr.SetTraceID(validTraceID)
-				lr.Body().SetEmptyMap().PutStr("WTTTT", "Abdk")
+				lr.Attributes().PutStr("hi", "bye")
+				// log.Printf("WTF IS THE BODY: %+v", lr.Body().AsRaw())
 				return lr
 			},
 			expected: func() ptrace.Span {
 				span := ptrace.NewSpan()
 
-				span.SetName("wtf")
+				span.SetName("bye")
+				span.SetSpanID(pcommon.SpanID([8]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11,    }))
 
 				return span
 			},
@@ -64,8 +72,8 @@ func Test_convertLogRecord(t *testing.T) {
 			connector, err := newConnector(componenttest.NewNopTelemetrySettings(), tt.config)
 			assert.NoError(t, err)
 
-			span, err := connector.convertLogRecord(context.Background(), tt.res, tt.scope, tt.input())
-			fuckOff(log.Printf)
+			span, err := connector.convertLogRecord(context.Background(), tt.input())
+			// fuckOff(log.Printf)
 			assert.NoError(t, compareSpan(tt.expected(), span))
 			// tc, _, err := connector.traceContextGetter.Execute(context.Background(), ottllog.NewTransformContext(tt.input(), pcommon.NewInstrumentationScope(), pcommon.NewResource()))
 			assert.NoError(t, err)

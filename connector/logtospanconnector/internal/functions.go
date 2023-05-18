@@ -26,24 +26,25 @@ import (
 //
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/ottlfuncs"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottllog"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/logtospan"
 )
 
-type FactoryMap map[string]ottl.Factory[ottllog.TransformContext]
+type FactoryMap map[string]ottl.Factory[logtospan.TransformContext]
 
 func TraceContextFunctions() FactoryMap {
 	return ottl.CreateFactoryMap(
-		ottlfuncs.NewTraceIDFactory[ottllog.TransformContext](),
-		ottlfuncs.NewSpanIDFactory[ottllog.TransformContext](),
-		ottlfuncs.NewIsMatchFactory[ottllog.TransformContext](),
-		ottlfuncs.NewConcatFactory[ottllog.TransformContext](),
-		ottlfuncs.NewSplitFactory[ottllog.TransformContext](),
-		ottlfuncs.NewIntFactory[ottllog.TransformContext](),
-		ottlfuncs.NewConvertCaseFactory[ottllog.TransformContext](),
-		ottlfuncs.NewParseJSONFactory[ottllog.TransformContext](),
-		ottlfuncs.NewSubstringFactory[ottllog.TransformContext](),
-		ottlfuncs.NewMergeMapsFactory[ottllog.TransformContext](),
-		newFromFactory[ottllog.TransformContext](),
+		ottlfuncs.NewTraceIDFactory[logtospan.TransformContext](),
+		ottlfuncs.NewSpanIDFactory[logtospan.TransformContext](),
+		ottlfuncs.NewIsMatchFactory[logtospan.TransformContext](),
+		ottlfuncs.NewConcatFactory[logtospan.TransformContext](),
+		ottlfuncs.NewSplitFactory[logtospan.TransformContext](),
+		ottlfuncs.NewIntFactory[logtospan.TransformContext](),
+		ottlfuncs.NewConvertCaseFactory[logtospan.TransformContext](),
+		ottlfuncs.NewParseJSONFactory[logtospan.TransformContext](),
+		ottlfuncs.NewSubstringFactory[logtospan.TransformContext](),
+		ottlfuncs.NewMergeMapsFactory[logtospan.TransformContext](),
+		ottlfuncs.NewSetFactory[logtospan.TransformContext](),
+		newFromFactory[logtospan.TransformContext](),
 		newFromLogRecordFactory(),
 		newStringFactory(),
 	)
@@ -64,12 +65,12 @@ type StringArguments[K any] struct {
 	Target ottl.Getter[K] `ottlarg:"0"`
 }
 
-func newStringFactory() ottl.Factory[ottllog.TransformContext] {
-	return ottl.NewFactory("String", &StringArguments[ottllog.TransformContext]{}, createStringFunction)
+func newStringFactory() ottl.Factory[logtospan.TransformContext] {
+	return ottl.NewFactory("String", &StringArguments[logtospan.TransformContext]{}, createStringFunction)
 }
 
-func createStringFunction(fCtx ottl.FunctionContext, oArgs ottl.Arguments) (ottl.ExprFunc[ottllog.TransformContext], error) {
-	args, ok := oArgs.(*StringArguments[ottllog.TransformContext])
+func createStringFunction(fCtx ottl.FunctionContext, oArgs ottl.Arguments) (ottl.ExprFunc[logtospan.TransformContext], error) {
+	args, ok := oArgs.(*StringArguments[logtospan.TransformContext])
 
 	if !ok {
 		return nil, errors.New("String args must be of type *StringArguments[K]")
@@ -79,8 +80,8 @@ func createStringFunction(fCtx ottl.FunctionContext, oArgs ottl.Arguments) (ottl
 }
 
 
-func stringF(target ottl.Getter[ottllog.TransformContext]) (ottl.ExprFunc[ottllog.TransformContext], error) {
-	return func(ctx context.Context, tCtx ottllog.TransformContext) (interface{}, error) {
+func stringF(target ottl.Getter[logtospan.TransformContext]) (ottl.ExprFunc[logtospan.TransformContext], error) {
+	return func(ctx context.Context, tCtx logtospan.TransformContext) (interface{}, error) {
 		lr := tCtx.GetLogRecord()
 
 		tc := TraceContext{TraceID: lr.TraceID(), SpanID: lr.SpanID()}
@@ -118,17 +119,17 @@ func from[K any](args *FromArguments[K]) (ottl.ExprFunc[K], error) {
 	}, nil
 }
 
-func newFromLogRecordFactory() ottl.Factory[ottllog.TransformContext] {
+func newFromLogRecordFactory() ottl.Factory[logtospan.TransformContext] {
 	return ottl.NewFactory("from_log_record", &struct{}{}, createFromLogRecordFunction)
 }
 
-func createFromLogRecordFunction(_ ottl.FunctionContext, _ ottl.Arguments) (ottl.ExprFunc[ottllog.TransformContext], error) {
+func createFromLogRecordFunction(_ ottl.FunctionContext, _ ottl.Arguments) (ottl.ExprFunc[logtospan.TransformContext], error) {
 	return fromLogRecord()
 }
 
 
-func fromLogRecord() (ottl.ExprFunc[ottllog.TransformContext], error) {
-	return func(ctx context.Context, tCtx ottllog.TransformContext) (interface{}, error) {
+func fromLogRecord() (ottl.ExprFunc[logtospan.TransformContext], error) {
+	return func(ctx context.Context, tCtx logtospan.TransformContext) (interface{}, error) {
 		lr := tCtx.GetLogRecord()
 
 		tc := TraceContext{TraceID: lr.TraceID(), SpanID: lr.SpanID()}

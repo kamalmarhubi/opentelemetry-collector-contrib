@@ -18,8 +18,7 @@ import (
 )
 
 type Config struct {
-	TraceContext string `mapstructure:"trace_context"`
-	SpanName string `mapstructure:"span_name"`
+	Statements []string  `mapstructure:"statements"`
 }
 
 func (config *Config) Validate() error {

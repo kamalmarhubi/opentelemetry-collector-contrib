@@ -29,9 +29,9 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	// conventions "go.opentelemetry.io/collector/semconv/v1.6.1"
-	"go.uber.org/zap"
+	// "go.uber.org/zap"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottllog"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/logtospan"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/logtospanconnector/internal"
 	// "github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector/internal/cache"
@@ -42,20 +42,26 @@ import (
 
 func init() {
 	fuckOff(log.Printf)
+	// fuckOff(zap.Any)
 }
 
-func fuckOff(_ any) {}
+func fuckOff(_ any) any { return nil }
 
 
-type logtospan struct {
+type connector struct {
 	lock   sync.Mutex
 	settings component.TelemetrySettings
 	
 	config Config
 
 	logsConsumer consumer.Logs
-	traceContextGetter *ottl.Statement[ottllog.TransformContext]
-	spanNameGetter *ottl.Statement[ottllog.TransformContext]
+	// just have some defaults
+	// trace context: get from log
+	// parent: need to specify
+	//
+	// traceContextGetter *ottl.Statement[ottllog.TransformContext]
+	// spanNameGetter *ottl.Statement[ottllog.TransformContext]
+	statements ottl.Statements[logtospan.TransformContext]
 
 	done    chan struct{}
 	started bool
@@ -63,44 +69,38 @@ type logtospan struct {
 	shutdownOnce sync.Once
 }
 
-func parseWithFunctions(settings component.TelemetrySettings, factoryMap internal.FactoryMap, stmt string) (*ottl.Statement[ottllog.TransformContext], error) {
-	parser, err :=  ottllog.NewParser(factoryMap, settings)
+func parseWithFunctions(settings component.TelemetrySettings, factoryMap internal.FactoryMap, stmts []string) ([]*ottl.Statement[logtospan.TransformContext], error) {
+	parser, err :=  logtospan.NewParser(factoryMap, settings)
 	if err != nil {
 		return nil, err
 	}
-	parsed, err := parser.ParseStatement(stmt)
+	parsed, err := parser.ParseStatements(stmts)
 	if err != nil {
 		return nil, err
 	}
 	return parsed, nil
 }
 
-func newConnector(settings component.TelemetrySettings, config component.Config) (*logtospan, error) {
+func newConnector(settings component.TelemetrySettings, config component.Config) (*connector, error) {
 	settings.Logger.Info("Building logtospan connector")
 	cfg := config.(*Config)
 
-	traceContextGetter, err := parseWithFunctions(settings, internal.TraceContextFunctions(), cfg.TraceContext)
+	statements, err := parseWithFunctions(settings, internal.TraceContextFunctions(), cfg.Statements)
 	if err != nil {
 		return nil, err
 	}
 
-	spanNameGetter, err := parseWithFunctions(settings, internal.TraceContextFunctions(), cfg.SpanName)
-	if err != nil {
-		return nil, err
-	}
-
-	return &logtospan{
+	return &connector{
 		settings: settings, 
 		config:                *cfg,
-		traceContextGetter: traceContextGetter,
-		spanNameGetter: spanNameGetter,
+		statements: ottl.NewStatements(statements, settings, ottl.WithErrorMode[logtospan.TransformContext](ottl.PropagateError)),
 		done:                  make(chan struct{}),
 	}, nil
 }
 
 
 // Start implements the component.Component interface.
-func (c *logtospan) Start(ctx context.Context, _ component.Host) error {
+func (c *connector) Start(ctx context.Context, _ component.Host) error {
 	c.settings.Logger.Info("Starting logtospan connector")
 
 	c.started = true
@@ -117,7 +117,7 @@ func (c *logtospan) Start(ctx context.Context, _ component.Host) error {
 }
 
 // Shutdown implements the component.Component interface.
-func (c *logtospan) Shutdown(context.Context) error {
+func (c *connector) Shutdown(context.Context) error {
 	c.shutdownOnce.Do(func() {
 		c.settings.Logger.Info("Shutting down logtospan connector")
 		if c.started {
@@ -128,51 +128,59 @@ func (c *logtospan) Shutdown(context.Context) error {
 }
 
 // Capabilities implements the consumer interface.
-func (c *logtospan) Capabilities() consumer.Capabilities {
+func (c *connector) Capabilities() consumer.Capabilities {
 	return consumer.Capabilities{MutatesData: false}
 }
 
 // ConsumeTraces implements the consumer.Traces interface.
 // It aggregates the trace data to generate metrics.
-func (c *logtospan) ConsumeLogs(ctx context.Context, logs plog.Logs) error {
+func (c *connector) ConsumeLogs(ctx context.Context, logs plog.Logs) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	c.convertLogs(ctx, logs)
 	return nil
 }
 
-func (c *logtospan) convertLogRecord(ctx context.Context, res pcommon.Resource, scope pcommon.InstrumentationScope, lr plog.LogRecord) (ptrace.Span, error) {
+func (c *connector) convertLogRecord(ctx context.Context, /* res pcommon.Resource, scope pcommon.InstrumentationScope, */ lr plog.LogRecord) (ptrace.Span, error) {
 	span := ptrace.NewSpan()
 
-	tcRes, _, err := c.traceContextGetter.Execute(ctx, ottllog.NewTransformContext(lr, scope, res))
-	if err != nil {
-		return span, err
-	}
-	tc := tcRes.(internal.TraceContext)
-	// if !tc.IsValid() {
-	// 	continue
-	// }
+	log.Printf("%+v", c.statements)
+	err := c.statements.Execute(ctx, logtospan.NewTransformContext(lr, span))
 
-	nameRes, _, err := c.spanNameGetter.Execute(ctx, ottllog.NewTransformContext(lr, scope, res))
-	if err != nil {
-		c.settings.Logger.Info("lol", zap.Any("ahahah", nameRes))
-		return span, err
-	}
-	missingno := "missingno"
-	name := nameRes.(*string)
-	if name == nil {
-		name = &missingno
-	}
-
-	span.SetName(*name)
-	span.SetTraceID(tc.TraceID)
-	span.SetSpanID(tc.SpanID)
-	span.SetParentSpanID(tc.ParentSpanID)
-
-	return span, nil
+	return span, err
 }
+// func (c *connector) convertLogRecord(ctx context.Context, res pcommon.Resource, scope pcommon.InstrumentationScope, lr plog.LogRecord) (ptrace.Span, error) {
+// 	span := ptrace.NewSpan()
+//
+// 	tcRes, _, err := c.traceContextGetter.Execute(ctx, logtospan.NewTransformContext(lr, scope, res))
+// 	if err != nil {
+// 		return span, err
+// 	}
+// 	tc := tcRes.(internal.TraceContext)
+// 	// if !tc.IsValid() {
+// 	// 	continue
+// 	// }
+//
+// 	nameRes, _, err := c.spanNameGetter.Execute(ctx, logtospan.NewTransformContext(lr, scope, res))
+// 	if err != nil {
+// 		c.settings.Logger.Info("lol", zap.Any("ahahah", nameRes))
+// 		return span, err
+// 	}
+// 	missingno := "missingno"
+// 	name := nameRes.(*string)
+// 	if name == nil {
+// 		name = &missingno
+// 	}
+//
+// 	span.SetName(*name)
+// 	span.SetTraceID(tc.TraceID)
+// 	span.SetSpanID(tc.SpanID)
+// 	span.SetParentSpanID(tc.ParentSpanID)
+//
+// 	return span, nil
+// }
 
-func (c *logtospan) convertLogs(ctx context.Context, logs plog.Logs) (ptrace.Traces, error) {
+func (c *connector) convertLogs(ctx context.Context, logs plog.Logs) (ptrace.Traces, error) {
 	traces := ptrace.NewTraces()
 	rss := traces.ResourceSpans()
 
@@ -199,34 +207,37 @@ func (c *logtospan) convertLogs(ctx context.Context, logs plog.Logs) (ptrace.Tra
 				lr := lrs.At(k)
 
 				if lr.Body().Type() != pcommon.ValueTypeStr {
+					c.settings.Logger.Info("log with non-string body")
 					// TODO
 					// log? metric?
 				}
 
-				tcRes, _, err := c.traceContextGetter.Execute(ctx, ottllog.NewTransformContext(lr, scope, res))
+				span, err := c.convertLogRecord(ctx, lr)
 				if err != nil {
+					// TODO something?
 					return traces, err
 				}
-				tc := tcRes.(internal.TraceContext)
-				if !tc.IsValid() {
-					continue
-				}
-				nameRes, _, err := c.spanNameGetter.Execute(ctx, ottllog.NewTransformContext(lr, scope, res))
-				if err != nil {
-					c.settings.Logger.Info("lol", zap.Any("ahahah", nameRes))
-					return traces, err
-				}
-				name := *nameRes.(*string)
-				c.settings.Logger.Info("lol", zap.Any("ahahah", name))
 
-				span := spans.AppendEmpty()
-				span.SetName(*nameRes.(*string))
-				span.SetTraceID(tc.TraceID)
-				span.SetSpanID(tc.SpanID)
-				span.SetParentSpanID(tc.ParentSpanID)
-				if err != nil {
-					return traces, err
-				}
+				span.MoveTo(spans.AppendEmpty())
+				//
+				//
+				// tc := tcRes.(internal.TraceContext)
+				// if !tc.IsValid() {
+				// 	continue
+				// }
+				// nameRes, _, err := c.spanNameGetter.Execute(ctx, logtospan.NewTransformContext(lr, scope))
+				// if err != nil {
+				// 	c.settings.Logger.Info("lol", zap.Any("ahahah", nameRes))
+				// 	return traces, err
+				// }
+				// name := *nameRes.(*string)
+				// c.settings.Logger.Info("lol", zap.Any("ahahah", name))
+				//
+				// span := spans.AppendEmpty()
+				// span.SetName(*nameRes.(*string))
+				// span.SetTraceID(tc.TraceID)
+				// span.SetSpanID(tc.SpanID)
+				// span.SetParentSpanID(tc.ParentSpanID)
 			}
 		}
 	}
