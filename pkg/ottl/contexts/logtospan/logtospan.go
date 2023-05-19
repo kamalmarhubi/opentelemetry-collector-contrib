@@ -16,15 +16,15 @@ package logtospan // import "github.com/open-telemetry/opentelemetry-collector-c
 
 import (
 	"context"
-	"time"
 	"encoding/hex"
 	"fmt"
 	"log"
+	"time"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/pdata/pcommon"
-	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/internal"
@@ -32,8 +32,8 @@ import (
 )
 
 type TransformContext struct {
-	logRecord plog.LogRecord
-	resource pcommon.Resource
+	logRecord            plog.LogRecord
+	resource             pcommon.Resource
 	instrumentationScope pcommon.InstrumentationScope
 	span                 ptrace.Span
 	cache                pcommon.Map
@@ -43,8 +43,8 @@ type Option func(*ottl.Parser[TransformContext])
 
 func NewTransformContext(resource pcommon.Resource, instrumentationScope pcommon.InstrumentationScope, log plog.LogRecord, span ptrace.Span) TransformContext {
 	return TransformContext{
-		logRecord: log,
-		resource: resource,
+		logRecord:            log,
+		resource:             resource,
 		instrumentationScope: instrumentationScope,
 		span:                 span,
 		cache:                pcommon.NewMap(),
@@ -118,7 +118,7 @@ func newPathGetSetter(path []ottl.Field) (ottl.GetSetter[TransformContext], erro
 	case "instrumentation_scope":
 		return internal.ScopePathGetSetter[TransformContext](path[1:])
 	default:
-	// case "span":
+		// case "span":
 		log.Printf("it's a span?????????????????????")
 		return internal.SpanPathGetSetter[TransformContext](path)
 	}
@@ -380,5 +380,3 @@ func accessStringSpanID() ottl.StandardGetSetter[TransformContext] {
 		},
 	}
 }
-
-

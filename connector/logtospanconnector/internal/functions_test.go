@@ -15,14 +15,14 @@
 package internal // import "github.com/open-telemetry/opentelemetry-collector-contrib/connecctor/logtospanconnector/internal"
 
 import (
-	// "context"
-	// "testing"
-	//
-	// "github.com/stretchr/testify/assert"
-	// "go.opentelemetry.io/collector/pdata/pcommon"
-	// "go.opentelemetry.io/collector/pdata/plog"
-	//
-	// "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottllog"
+// "context"
+// "testing"
+//
+// "github.com/stretchr/testify/assert"
+// "go.opentelemetry.io/collector/pdata/pcommon"
+// "go.opentelemetry.io/collector/pdata/plog"
+//
+// "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottllog"
 )
 
 // var validSpanID = pcommon.SpanID([8]byte{0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba,    })

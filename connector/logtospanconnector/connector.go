@@ -47,11 +47,10 @@ func init() {
 
 func fuckOff(_ any) any { return nil }
 
-
 type connector struct {
-	lock   sync.Mutex
+	lock     sync.Mutex
 	settings component.TelemetrySettings
-	
+
 	config Config
 
 	logsConsumer consumer.Logs
@@ -70,7 +69,7 @@ type connector struct {
 }
 
 func parseWithFunctions(settings component.TelemetrySettings, factoryMap internal.FactoryMap, stmts []string) ([]*ottl.Statement[logtospan.TransformContext], error) {
-	parser, err :=  logtospan.NewParser(factoryMap, settings)
+	parser, err := logtospan.NewParser(factoryMap, settings)
 	if err != nil {
 		return nil, err
 	}
@@ -91,13 +90,12 @@ func newConnector(settings component.TelemetrySettings, config component.Config)
 	}
 
 	return &connector{
-		settings: settings, 
-		config:                *cfg,
+		settings:   settings,
+		config:     *cfg,
 		statements: ottl.NewStatements(statements, settings, ottl.WithErrorMode[logtospan.TransformContext](cfg.ErrorMode)),
-		done:                  make(chan struct{}),
+		done:       make(chan struct{}),
 	}, nil
 }
-
 
 // Start implements the component.Component interface.
 func (c *connector) Start(ctx context.Context, _ component.Host) error {
@@ -149,6 +147,7 @@ func (c *connector) convertLogRecord(ctx context.Context, res pcommon.Resource, 
 
 	return span, err
 }
+
 // func (c *connector) convertLogRecord(ctx context.Context, res pcommon.Resource, scope pcommon.InstrumentationScope, lr plog.LogRecord) (ptrace.Span, error) {
 // 	span := ptrace.NewSpan()
 //

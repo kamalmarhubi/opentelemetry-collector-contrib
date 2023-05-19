@@ -7,8 +7,8 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"time"
 	"log"
+	"time"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"

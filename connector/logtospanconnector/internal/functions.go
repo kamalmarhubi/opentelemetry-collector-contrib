@@ -16,17 +16,17 @@ package internal // import "github.com/open-telemetry/opentelemetry-collector-co
 
 import (
 	"context"
-// 	"fmt"
-//
+	// 	"fmt"
+	//
 	"errors"
 	"log"
-//
-// 	"go.opentelemetry.io/collector/pdata/pmetric"
+	//
+	// 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pcommon"
-//
+	//
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/ottlfuncs"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/logtospan"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/ottlfuncs"
 )
 
 type FactoryMap map[string]ottl.Factory[logtospan.TransformContext]
@@ -51,10 +51,10 @@ func TraceContextFunctions() FactoryMap {
 }
 
 type TraceContext struct {
-	TraceID pcommon.TraceID
-	SpanID pcommon.SpanID
+	TraceID      pcommon.TraceID
+	SpanID       pcommon.SpanID
 	ParentSpanID pcommon.SpanID
-	TraceState pcommon.TraceState
+	TraceState   pcommon.TraceState
 }
 
 func (tc TraceContext) IsValid() bool {
@@ -78,7 +78,6 @@ func createStringFunction(fCtx ottl.FunctionContext, oArgs ottl.Arguments) (ottl
 
 	return stringF(args.Target)
 }
-
 
 func stringF(target ottl.Getter[logtospan.TransformContext]) (ottl.ExprFunc[logtospan.TransformContext], error) {
 	return func(ctx context.Context, tCtx logtospan.TransformContext) (interface{}, error) {
@@ -112,7 +111,6 @@ func createFromFunction[K any](_ ottl.FunctionContext, oArgs ottl.Arguments) (ot
 	return from(args)
 }
 
-
 func from[K any](args *FromArguments[K]) (ottl.ExprFunc[K], error) {
 	return func(ctx context.Context, tCtx K) (interface{}, error) {
 		return args.Target.Get(ctx, tCtx)
@@ -126,7 +124,6 @@ func newFromLogRecordFactory() ottl.Factory[logtospan.TransformContext] {
 func createFromLogRecordFunction(_ ottl.FunctionContext, _ ottl.Arguments) (ottl.ExprFunc[logtospan.TransformContext], error) {
 	return fromLogRecord()
 }
-
 
 func fromLogRecord() (ottl.ExprFunc[logtospan.TransformContext], error) {
 	return func(ctx context.Context, tCtx logtospan.TransformContext) (interface{}, error) {

@@ -1,63 +1,62 @@
 package logtospanconnector
 
 import (
-	"testing"
-	"log"
 	"context"
 	"github.com/google/go-cmp/cmp"
+	"log"
+	"testing"
 	// "github.com/stretchr/testify/require"
-	"go.uber.org/multierr"
 	"fmt"
+	"go.uber.org/multierr"
 
 	// "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottllog"
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/collector/pdata/pcommon"
-	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/ptrace"
 	// "github.com/open-telemetry/opentelemetry-collector-contrib/connector/logtospanconnector/internal"
 	"go.opentelemetry.io/collector/component/componenttest"
 )
-var validSpanID = pcommon.SpanID([8]byte{0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba,    })
-var validTraceID = pcommon.TraceID([16]byte{0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba,    0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba,    })
+
+var validSpanID = pcommon.SpanID([8]byte{0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba})
+var validTraceID = pcommon.TraceID([16]byte{0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba})
 
 var _ = fuckOff(log.Printf)
 
 type tt struct {
-name     string
-config   *Config
-resource func() pcommon.Resource
-scope func() pcommon.InstrumentationScope
-logRecord    func() plog.LogRecord
-expected func() ptrace.Span
+	name      string
+	config    *Config
+	resource  func() pcommon.Resource
+	scope     func() pcommon.InstrumentationScope
+	logRecord func() plog.LogRecord
+	expected  func() ptrace.Span
 }
 
 func (tt tt) Resource() pcommon.Resource {
-		if tt.resource == nil {
-				return pcommon.NewResource()
-		}
-		return tt.resource()
+	if tt.resource == nil {
+		return pcommon.NewResource()
+	}
+	return tt.resource()
 }
 func (tt tt) Scope() pcommon.InstrumentationScope {
-		if tt.scope == nil {
-				return pcommon.NewInstrumentationScope()
-		}
-		return tt.scope()
+	if tt.scope == nil {
+		return pcommon.NewInstrumentationScope()
+	}
+	return tt.scope()
 }
 func Test_convertLogRecord(t *testing.T) {
 	tests := []tt{
 		{
-			name: "empty log with no statements and error_mode unset",
-			config: &Config{Statements: []string{
-			}},
+			name:   "empty log with no statements and error_mode unset",
+			config: &Config{Statements: []string{}},
 			logRecord: func() plog.LogRecord {
 				return plog.NewLogRecord()
 			},
 			expected: func() ptrace.Span { return ptrace.NewSpan() },
 		},
 		{
-			name: "empty log with no statements and error_mode ignore",
-			config: &Config{Statements: []string{
-			}},
+			name:   "empty log with no statements and error_mode ignore",
+			config: &Config{Statements: []string{}},
 			logRecord: func() plog.LogRecord {
 				return plog.NewLogRecord()
 			},
@@ -82,16 +81,15 @@ func Test_convertLogRecord(t *testing.T) {
 				span := ptrace.NewSpan()
 
 				span.SetName("bye")
-				span.SetSpanID(pcommon.SpanID([8]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11,    }))
+				span.SetSpanID(pcommon.SpanID([8]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11}))
 
 				return span
 			},
-
 		},
 		{
 			name: "set(attributes)",
 			config: &Config{Statements: []string{
-			`set(attributes, log.attributes)`,
+				`set(attributes, log.attributes)`,
 				`set(span_id, log.span_id)`,
 				`set(trace_id, log.trace_id)`,
 			}},
@@ -113,7 +111,6 @@ func Test_convertLogRecord(t *testing.T) {
 
 				return span
 			},
-
 		},
 	}
 	for _, tt := range tests {
