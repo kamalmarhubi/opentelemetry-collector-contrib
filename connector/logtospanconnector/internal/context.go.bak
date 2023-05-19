@@ -1,0 +1,55 @@
+import (
+	"context"
+	"fmt"
+
+	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/collector/pdata/plog"
+
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
+)
+
+type LogToSpanContext struct {
+	log plog.LogRecord
+	span                 ptrace.Span
+	cache                pcommon.Map
+}
+
+type Option func(*ottl.Parser[LogToSpanContext])
+
+func NewTransformContext(log plog.LogRecord, span ptrace.Span) LogToSpanContext {
+	return TransformContext{
+		log: log,
+		span:                 span,
+		cache:                pcommon.NewMap(),
+	}
+}
+
+func (l2sCtx LogToSpanContext) GetSpan() ptrace.Span {
+	return l2sCtx.span
+}
+
+func (l2sCtx LogToSpanContext) GetLog() plog.LogRecord {
+	return l2sCtx.log
+}
+
+func (l2sCtx LogToSpanContext) getCache() pcommon.Map {
+	return l2sCtx.cache
+}
+
+func NewParser(functions map[string]ottl.Factory[LogToSpanContext], telemetrySettings component.TelemetrySettings, options ...Option) (ottl.Parser[LogToSpanContext], error) {
+	p, err := ottl.NewParser[LogToSpanContext](
+		functions,
+		parsePath,
+		telemetrySettings,
+		// ottl.WithEnumParser[LogToSpanContext](parseEnum),
+	)
+	if err != nil {
+		return ottl.Parser[LogToSpanContext]{}, err
+	}
+	for _, opt := range options {
+		opt(&p)
+	}
+	return p, nil
+}

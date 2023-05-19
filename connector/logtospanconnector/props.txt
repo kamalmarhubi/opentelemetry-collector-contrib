@@ -1,0 +1,77 @@
+Attributes	LOG
+Attributes	SPAN
+DroppedAttributesCount	LOG
+DroppedAttributesCount	SPAN
+SetDroppedAttributesCount	LOG
+SetDroppedAttributesCount	SPAN
+SetSpanID	LOG
+SetSpanID	SPAN
+SetTraceID	LOG
+SetTraceID	SPAN
+SpanID	LOG
+SpanID	SPAN
+TraceID	LOG
+TraceID	SPAN
+
+
+
+DroppedEventsCount	SPAN
+DroppedLinksCount	SPAN
+EndTimestamp	SPAN
+Events	SPAN
+Kind	SPAN
+Links	SPAN
+Name	SPAN
+ParentSpanID	SPAN
+
+
+SetDroppedEventsCount	SPAN
+SetDroppedLinksCount	SPAN
+SetEndTimestamp	SPAN
+SetKind	SPAN
+SetName	SPAN
+SetParentSpanID	SPAN
+
+
+SetStartTimestamp	SPAN
+
+
+
+
+StartTimestamp	SPAN
+Status	SPAN
+
+
+
+TraceState	SPAN
+
+Body	LOG
+
+Flags	LOG
+SetFlags	LOG
+
+ObservedTimestamp	LOG
+SetObservedTimestamp	LOG
+
+SeverityNumber	LOG
+SetSeverityNumber	LOG
+
+SeverityText	LOG
+SetSeverityText	LOG
+
+Timestamp	LOG
+SetTimestamp	LOG
+
+// copyAttributes()
+Attributes	LOG
+
+DroppedAttributesCount	LOG
+SetDroppedAttributesCount	LOG
+//
+
+// copyTraceContext()?
+SetSpanID	LOG
+SpanID	LOG
+
+TraceID	LOG
+SetTraceID	LOG

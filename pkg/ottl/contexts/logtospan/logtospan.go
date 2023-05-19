@@ -33,30 +33,42 @@ import (
 
 type TransformContext struct {
 	logRecord plog.LogRecord
+	resource pcommon.Resource
+	instrumentationScope pcommon.InstrumentationScope
 	span                 ptrace.Span
 	cache                pcommon.Map
 }
 
 type Option func(*ottl.Parser[TransformContext])
 
-func NewTransformContext(log plog.LogRecord, span ptrace.Span) TransformContext {
+func NewTransformContext(resource pcommon.Resource, instrumentationScope pcommon.InstrumentationScope, log plog.LogRecord, span ptrace.Span) TransformContext {
 	return TransformContext{
 		logRecord: log,
+		resource: resource,
+		instrumentationScope: instrumentationScope,
 		span:                 span,
 		cache:                pcommon.NewMap(),
 	}
 }
 
-func (tCtx TransformContext) GetSpan() ptrace.Span {
-	return tCtx.span
+func (tCtx TransformContext) getCache() pcommon.Map {
+	return tCtx.cache
+}
+
+func (tCtx TransformContext) GetResource() pcommon.Resource {
+	return tCtx.resource
+}
+
+func (tCtx TransformContext) GetInstrumentationScope() pcommon.InstrumentationScope {
+	return tCtx.instrumentationScope
 }
 
 func (tCtx TransformContext) GetLogRecord() plog.LogRecord {
 	return tCtx.logRecord
 }
 
-func (tCtx TransformContext) getCache() pcommon.Map {
-	return tCtx.cache
+func (tCtx TransformContext) GetSpan() ptrace.Span {
+	return tCtx.span
 }
 
 func NewParser(functions map[string]ottl.Factory[TransformContext], telemetrySettings component.TelemetrySettings, options ...Option) (ottl.Parser[TransformContext], error) {
@@ -88,6 +100,28 @@ func parsePath(val *ottl.Path) (ottl.GetSetter[TransformContext], error) {
 		return newPathGetSetter(val.Fields)
 	}
 	return nil, fmt.Errorf("bad path %v", val)
+}
+
+func newPathGetSetter(path []ottl.Field) (ottl.GetSetter[TransformContext], error) {
+	switch path[0].Name {
+	case "cache":
+		mapKey := path[0].Keys
+		if mapKey == nil {
+			return accessCache(), nil
+		}
+		return accessCacheKey(mapKey), nil
+	// TODO: ideally these next three would be read-only?
+	case "log":
+		return newLogPathGetSetter(path[1:])
+	case "resource":
+		return internal.ResourcePathGetSetter[TransformContext](path[1:])
+	case "instrumentation_scope":
+		return internal.ScopePathGetSetter[TransformContext](path[1:])
+	default:
+	// case "span":
+		log.Printf("it's a span?????????????????????")
+		return internal.SpanPathGetSetter[TransformContext](path)
+	}
 }
 
 // func logPathGetSetter struct {
@@ -132,23 +166,6 @@ func newLogPathGetSetter(path []ottl.Field) (ottl.GetSetter[TransformContext], e
 		}
 	}
 	return nil, fmt.Errorf("invalid path expression %v", path)
-}
-
-func newPathGetSetter(path []ottl.Field) (ottl.GetSetter[TransformContext], error) {
-	switch path[0].Name {
-	case "cache":
-		mapKey := path[0].Keys
-		if mapKey == nil {
-			return accessCache(), nil
-		}
-		return accessCacheKey(mapKey), nil
-	case "log":
-		return newLogPathGetSetter(path[1:])
-	case "span":
-		log.Printf("it's a span?????????????????????")
-		return internal.SpanPathGetSetter[TransformContext](path[1:])
-	}
-	return nil, fmt.Errorf("invalid logtospan path expression %v", path)
 }
 
 func accessCache() ottl.StandardGetSetter[TransformContext] {
@@ -363,3 +380,5 @@ func accessStringSpanID() ottl.StandardGetSetter[TransformContext] {
 		},
 	}
 }
+
+

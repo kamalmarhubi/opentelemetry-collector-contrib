@@ -93,7 +93,7 @@ func newConnector(settings component.TelemetrySettings, config component.Config)
 	return &connector{
 		settings: settings, 
 		config:                *cfg,
-		statements: ottl.NewStatements(statements, settings, ottl.WithErrorMode[logtospan.TransformContext](ottl.PropagateError)),
+		statements: ottl.NewStatements(statements, settings, ottl.WithErrorMode[logtospan.TransformContext](cfg.ErrorMode)),
 		done:                  make(chan struct{}),
 	}, nil
 }
@@ -141,11 +141,11 @@ func (c *connector) ConsumeLogs(ctx context.Context, logs plog.Logs) error {
 	return nil
 }
 
-func (c *connector) convertLogRecord(ctx context.Context, /* res pcommon.Resource, scope pcommon.InstrumentationScope, */ lr plog.LogRecord) (ptrace.Span, error) {
+func (c *connector) convertLogRecord(ctx context.Context, res pcommon.Resource, scope pcommon.InstrumentationScope, lr plog.LogRecord) (ptrace.Span, error) {
 	span := ptrace.NewSpan()
 
-	log.Printf("%+v", c.statements)
-	err := c.statements.Execute(ctx, logtospan.NewTransformContext(lr, span))
+	// log.Printf("%+v", c.statements)
+	err := c.statements.Execute(ctx, logtospan.NewTransformContext(res, scope, lr, span))
 
 	return span, err
 }
@@ -212,7 +212,7 @@ func (c *connector) convertLogs(ctx context.Context, logs plog.Logs) (ptrace.Tra
 					// log? metric?
 				}
 
-				span, err := c.convertLogRecord(ctx, lr)
+				span, err := c.convertLogRecord(ctx, res, scope, lr)
 				if err != nil {
 					// TODO something?
 					return traces, err

@@ -22,21 +22,43 @@ var validTraceID = pcommon.TraceID([16]byte{0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 
 
 var _ = fuckOff(log.Printf)
 
+type tt struct {
+name     string
+config   *Config
+resource func() pcommon.Resource
+scope func() pcommon.InstrumentationScope
+logRecord    func() plog.LogRecord
+expected func() ptrace.Span
+}
+
+func (tt tt) Resource() pcommon.Resource {
+		if tt.resource == nil {
+				return pcommon.NewResource()
+		}
+		return tt.resource()
+}
+func (tt tt) Scope() pcommon.InstrumentationScope {
+		if tt.scope == nil {
+				return pcommon.NewInstrumentationScope()
+		}
+		return tt.scope()
+}
 func Test_convertLogRecord(t *testing.T) {
-	t.Fail()
-	tests := []struct {
-		name     string
-		config   *Config
-		res pcommon.Resource
-		scope pcommon.InstrumentationScope
-		input    func() plog.LogRecord
-		expected func() ptrace.Span
-	}{
+	tests := []tt{
 		{
-			name: "no logs",
+			name: "empty log with no statements and error_mode unset",
 			config: &Config{Statements: []string{
 			}},
-			input: func() plog.LogRecord {
+			logRecord: func() plog.LogRecord {
+				return plog.NewLogRecord()
+			},
+			expected: func() ptrace.Span { return ptrace.NewSpan() },
+		},
+		{
+			name: "empty log with no statements and error_mode ignore",
+			config: &Config{Statements: []string{
+			}},
+			logRecord: func() plog.LogRecord {
 				return plog.NewLogRecord()
 			},
 			expected: func() ptrace.Span { return ptrace.NewSpan() },
@@ -44,11 +66,11 @@ func Test_convertLogRecord(t *testing.T) {
 		{
 			name: "valid trace context",
 			config: &Config{Statements: []string{
-				`set(span.name, log.attributes["hi"])`,
-				`set(span.span_id.string, "aabbccddeeff0011")`,
+				`set(name, log.attributes["hi"])`,
+				`set(span_id.string, "aabbccddeeff0011")`,
 			}},
-			res: pcommon.NewResource(),
-			input: func() plog.LogRecord {
+			// resource: pcommon.NewResource(),
+			logRecord: func() plog.LogRecord {
 				lr := plog.NewLogRecord()
 				lr.SetSpanID(validSpanID)
 				lr.SetTraceID(validTraceID)
@@ -66,17 +88,44 @@ func Test_convertLogRecord(t *testing.T) {
 			},
 
 		},
+		{
+			name: "set(attributes)",
+			config: &Config{Statements: []string{
+			`set(attributes, log.attributes)`,
+				`set(span_id, log.span_id)`,
+				`set(trace_id, log.trace_id)`,
+			}},
+			// res: pcommon.NewResource(),
+			logRecord: func() plog.LogRecord {
+				lr := plog.NewLogRecord()
+				lr.SetSpanID(validSpanID)
+				lr.SetTraceID(validTraceID)
+				lr.Attributes().FromRaw(map[string]any{"hi": "bye"})
+				// log.Printf("WTF IS THE BODY: %+v", lr.Body().AsRaw())
+				return lr
+			},
+			expected: func() ptrace.Span {
+				span := ptrace.NewSpan()
+
+				span.SetSpanID(validSpanID)
+				span.SetTraceID(validTraceID)
+				span.Attributes().PutStr("hi", "bye")
+
+				return span
+			},
+
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			connector, err := newConnector(componenttest.NewNopTelemetrySettings(), tt.config)
 			assert.NoError(t, err)
 
-			span, err := connector.convertLogRecord(context.Background(), tt.input())
+			span, err := connector.convertLogRecord(context.Background(), tt.Resource(), tt.Scope(), tt.logRecord())
+			assert.NoError(t, err)
 			// fuckOff(log.Printf)
 			assert.NoError(t, compareSpan(tt.expected(), span))
 			// tc, _, err := connector.traceContextGetter.Execute(context.Background(), ottllog.NewTransformContext(tt.input(), pcommon.NewInstrumentationScope(), pcommon.NewResource()))
-			assert.NoError(t, err)
 			// assert.Equal(t, tt.expected, tc)
 		})
 	}
