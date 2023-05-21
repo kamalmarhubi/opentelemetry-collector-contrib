@@ -19,7 +19,9 @@ import (
 	"context"
 	"log"
 	"sync"
+	"fmt"
 	// "time"
+	"reflect"
 
 	// "github.com/lightstep/go-expohisto/structure"
 	// "github.com/tilinna/clock"
@@ -39,10 +41,17 @@ import (
 	// "github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal/traceutil"
 	// "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatautil"
 )
+type empty struct{}
 
 func init() {
 	fuckOff(log.Printf)
 	// fuckOff(zap.Any)
+	packageName := reflect.TypeOf(empty{}).PkgPath()
+	fmt.Println("Current package name:", packageName)
+
+	// Alternatively, you can use the runtime package:
+	packageName = reflect.TypeOf(struct{}{}).PkgPath()
+	fmt.Println("Current package name (using runtime):", packageName)
 }
 
 func fuckOff(_ any) any { return nil }
