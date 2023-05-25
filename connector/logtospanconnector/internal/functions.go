@@ -24,10 +24,10 @@ import (
 	// 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	//
+	"github.com/dunglas/httpsfv"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/logtospan"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/ottlfuncs"
-	"github.com/dunglas/httpsfv"
 )
 
 type FactoryMap map[string]ottl.Factory[logtospan.TransformContext]
@@ -46,7 +46,7 @@ func TraceContextFunctions() FactoryMap {
 		ottlfuncs.NewMergeMapsFactory[logtospan.TransformContext](),
 		ottlfuncs.NewSetFactory[logtospan.TransformContext](),
 		// TODO add more of the standard functions here
-		// TODO add some fancy parse 
+		// TODO add some fancy parse
 
 		newParseStructuredFieldValuesFactory[logtospan.TransformContext](),
 		newFromFactory[logtospan.TransformContext](),
@@ -67,7 +67,7 @@ type ParseStructuredFieldValuesArguments[K any] struct {
 }
 
 func newParseStructuredFieldValuesFactory[K any]() ottl.Factory[K] {
-		return ottl.NewFactory("ParseStructuredFieldValues", &ParseStructuredFieldValuesArguments[K]{}, createParseStructuredFieldValuesFunction[K])
+	return ottl.NewFactory("ParseStructuredFieldValues", &ParseStructuredFieldValuesArguments[K]{}, createParseStructuredFieldValuesFunction[K])
 }
 
 func createParseStructuredFieldValuesFunction[K any](_ ottl.FunctionContext, oArgs ottl.Arguments) (ottl.ExprFunc[K], error) {
@@ -78,38 +78,38 @@ func createParseStructuredFieldValuesFunction[K any](_ ottl.FunctionContext, oAr
 	}
 	return parseStructuredFieldValues(args.Target), nil
 }
-func parseStructuredFieldValues[K any](target ottl.StringGetter[K])  ottl.ExprFunc[K] {
+func parseStructuredFieldValues[K any](target ottl.StringGetter[K]) ottl.ExprFunc[K] {
 	return func(ctx context.Context, tCtx K) (interface{}, error) {
-			targetVal, err := target.Get(ctx, tCtx)
-			if err != nil {
-					return nil, err
-			}
+		targetVal, err := target.Get(ctx, tCtx)
+		if err != nil {
+			return nil, err
+		}
 		dict, err := httpsfv.UnmarshalDictionary([]string{targetVal})
 		if err != nil {
-				return nil, err
+			return nil, err
 		}
 
 		res := pcommon.NewMap()
 
 		for _, k := range dict.Names() {
-				member, present := dict.Get(k)
-				if !present {
-						log.Printf("WHY NOT PRESENT: %v", k)
-						continue
-				}
-				switch v := member.(type) {
-				case httpsfv.Item:
-						res.PutEmpty(k).FromRaw(v.Value)
-				default:
-						log.Printf("NOT ITEM: %v", k)
-						continue
-				}
+			member, present := dict.Get(k)
+			if !present {
+				log.Printf("WHY NOT PRESENT: %v", k)
+				continue
+			}
+			switch v := member.(type) {
+			case httpsfv.Item:
+				res.PutEmpty(k).FromRaw(v.Value)
+			default:
+				log.Printf("NOT ITEM: %v", k)
+				continue
+			}
 		}
 
 		return res, nil
-		
+
 	}
-	}
+}
 
 func (tc TraceContext) IsValid() bool {
 	return !tc.TraceID.IsEmpty() && !tc.SpanID.IsEmpty()

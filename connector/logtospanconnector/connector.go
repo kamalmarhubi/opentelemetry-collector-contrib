@@ -17,9 +17,9 @@ package logtospanconnector // import "github.com/open-telemetry/opentelemetry-co
 import (
 	// "bytes"
 	"context"
+	"fmt"
 	"log"
 	"sync"
-	"fmt"
 	// "time"
 	"reflect"
 
@@ -41,6 +41,7 @@ import (
 	// "github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal/traceutil"
 	// "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatautil"
 )
+
 type empty struct{}
 
 func init() {
