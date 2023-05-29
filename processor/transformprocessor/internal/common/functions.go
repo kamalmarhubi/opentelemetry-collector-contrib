@@ -20,6 +20,7 @@ func Functions[K any]() map[string]ottl.Factory[K] {
 		ottlfuncs.NewIntFactory[K](),
 		ottlfuncs.NewConvertCaseFactory[K](),
 		ottlfuncs.NewParseJSONFactory[K](),
+		ottlfuncs.NewParseStructuredFieldValuesFactory[K](),
 		ottlfuncs.NewSubstringFactory[K](),
 		ottlfuncs.NewKeepKeysFactory[K](),
 		ottlfuncs.NewSetFactory[K](),
